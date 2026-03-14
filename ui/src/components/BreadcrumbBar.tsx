@@ -31,7 +31,7 @@ function GlobalToolbarPlugins({ context }: { context: GlobalToolbarContext }) {
 }
 
 export function BreadcrumbBar() {
-  const { breadcrumbs } = useBreadcrumbs();
+  const { breadcrumbs, actions } = useBreadcrumbs();
   const { toggleSidebar, isMobile } = useSidebar();
   const { selectedCompanyId, selectedCompany } = useCompany();
 
@@ -44,6 +44,10 @@ export function BreadcrumbBar() {
   );
 
   const globalToolbarSlots = <GlobalToolbarPlugins context={globalToolbarSlotContext} />;
+
+  const actionsSlot = actions ? (
+    <div className="flex items-center gap-1.5 shrink-0 pl-2">{actions}</div>
+  ) : null;
 
   if (breadcrumbs.length === 0) {
     return (
@@ -75,6 +79,7 @@ export function BreadcrumbBar() {
             {breadcrumbs[0].label}
           </h1>
         </div>
+        {actionsSlot}
         {globalToolbarSlots}
       </div>
     );
@@ -107,6 +112,7 @@ export function BreadcrumbBar() {
           </BreadcrumbList>
         </Breadcrumb>
       </div>
+      {actionsSlot}
       {globalToolbarSlots}
     </div>
   );
