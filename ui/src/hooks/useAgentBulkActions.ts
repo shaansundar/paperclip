@@ -32,7 +32,7 @@ export function useAgentBulkActions(agents: Agent[], companyId: string) {
   const { pushToast } = useToast();
 
   const stoppable = useMemo(
-    () => agents.filter((a) => a.status === "active" || a.status === "idle"),
+    () => agents.filter((a) => a.status === "active" || a.status === "idle" || a.status === "running"),
     [agents],
   );
   const startable = useMemo(
@@ -50,8 +50,12 @@ export function useAgentBulkActions(agents: Agent[], companyId: string) {
   };
 
   const stopAll = useMutation({
-    mutationFn: () =>
-      Promise.allSettled(stoppable.map((a) => agentsApi.pause(a.id, companyId))).then(summarize),
+    mutationFn: async () => {
+      const results = await Promise.allSettled(stoppable.map((a) => agentsApi.pause(a.id, companyId)));
+      const result = summarize(results);
+      if (result.succeeded === 0 && result.failed > 0) throw new Error("All pause calls failed");
+      return result;
+    },
     onSuccess: (r) => {
       pushToast(formatResult("Paused", r));
       invalidate();
@@ -60,8 +64,12 @@ export function useAgentBulkActions(agents: Agent[], companyId: string) {
   });
 
   const startAll = useMutation({
-    mutationFn: () =>
-      Promise.allSettled(startable.map((a) => agentsApi.resume(a.id, companyId))).then(summarize),
+    mutationFn: async () => {
+      const results = await Promise.allSettled(startable.map((a) => agentsApi.resume(a.id, companyId)));
+      const result = summarize(results);
+      if (result.succeeded === 0 && result.failed > 0) throw new Error("All resume calls failed");
+      return result;
+    },
     onSuccess: (r) => {
       pushToast(formatResult("Resumed", r));
       invalidate();
@@ -70,8 +78,12 @@ export function useAgentBulkActions(agents: Agent[], companyId: string) {
   });
 
   const retryFailed = useMutation({
-    mutationFn: () =>
-      Promise.allSettled(retryable.map((a) => agentsApi.invoke(a.id, companyId))).then(summarize),
+    mutationFn: async () => {
+      const results = await Promise.allSettled(retryable.map((a) => agentsApi.invoke(a.id, companyId)));
+      const result = summarize(results);
+      if (result.succeeded === 0 && result.failed > 0) throw new Error("All invoke calls failed");
+      return result;
+    },
     onSuccess: (r) => {
       pushToast(formatResult("Retried", r));
       invalidate();

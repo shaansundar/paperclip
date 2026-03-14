@@ -21,7 +21,7 @@ import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
-import { AgentBulkActions } from "../components/AgentBulkActions";
+import { useAgentHeaderActions } from "../hooks/useAgentHeaderActions";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
@@ -35,7 +35,7 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialog();
-  const { setBreadcrumbs, setActions } = useBreadcrumbs();
+  const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
   const hydratedActivityRef = useRef(false);
@@ -51,14 +51,7 @@ export function Dashboard() {
     setBreadcrumbs([{ label: "Dashboard" }]);
   }, [setBreadcrumbs]);
 
-  useEffect(() => {
-    if (!agents || !selectedCompanyId) {
-      setActions(null);
-      return;
-    }
-    setActions(<AgentBulkActions agents={agents} companyId={selectedCompanyId} />);
-    return () => setActions(null);
-  }, [agents, selectedCompanyId, setActions]);
+  useAgentHeaderActions(agents, selectedCompanyId);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.dashboard(selectedCompanyId!),
