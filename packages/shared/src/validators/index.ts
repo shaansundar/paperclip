@@ -178,3 +178,11 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  snapshotExportInputSchema,
+  snapshotImportInputSchema,
+  snapshotManifestSchema,
+  type SnapshotExportInputParsed,
+  type SnapshotImportInputParsed,
+} from "./snapshot.js";
