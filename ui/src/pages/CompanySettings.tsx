@@ -6,13 +6,15 @@ import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check } from "lucide-react";
+import { Settings, Check, Download, HardDrive } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
   ToggleField,
   HintIcon
 } from "../components/agent-config-primitives";
+import { SnapshotExportModal } from "../components/SnapshotExportModal";
+import { SnapshotImportModal } from "../components/SnapshotImportModal";
 
 type AgentSnippetInput = {
   onboardingTextUrl: string;
@@ -128,11 +130,16 @@ export function CompanySettings() {
     }
   });
 
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [snapshotExportOpen, setSnapshotExportOpen] = useState(false);
+  const [snapshotImportOpen, setSnapshotImportOpen] = useState(false);
+
   useEffect(() => {
     setInviteError(null);
     setInviteSnippet(null);
     setSnippetCopied(false);
     setSnippetCopyDelightId(0);
+    setDeleteConfirmText("");
   }, [selectedCompanyId]);
   const archiveMutation = useMutation({
     mutationFn: ({
@@ -153,6 +160,45 @@ export function CompanySettings() {
         queryKey: queryKeys.companies.stats
       });
     }
+  });
+
+  const exportMutation = useMutation({
+    mutationFn: () =>
+      companiesApi.exportBundle(selectedCompanyId!, {
+        include: { company: true, agents: true },
+      }),
+    onSuccess: (data) => {
+      const blob = new Blob([JSON.stringify(data, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${selectedCompany?.name ?? "company"}-archive.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: ({
+      companyId,
+      nextCompanyId,
+    }: {
+      companyId: string;
+      nextCompanyId: string | null;
+    }) => companiesApi.remove(companyId).then(() => ({ nextCompanyId })),
+    onSuccess: async ({ nextCompanyId }) => {
+      if (nextCompanyId) {
+        setSelectedCompanyId(nextCompanyId);
+      }
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.all,
+      });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.stats,
+      });
+    },
   });
 
   useEffect(() => {
@@ -379,6 +425,38 @@ export function CompanySettings() {
         </div>
       </div>
 
+      {/* Snapshot */}
+      <div className="space-y-4">
+        <div className="flex items-center gap-1.5">
+          <HardDrive className="h-3.5 w-3.5 text-muted-foreground" />
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            Snapshot
+          </div>
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <p className="text-sm text-muted-foreground">
+            Export or import a complete snapshot of this organization for device migration or backup.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setSnapshotExportOpen(true)}
+            >
+              <Download className="h-3.5 w-3.5 mr-1.5" />
+              Export Snapshot
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setSnapshotImportOpen(true)}
+            >
+              Import Snapshot
+            </Button>
+          </div>
+        </div>
+      </div>
+
       {/* Danger Zone */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
@@ -429,8 +507,91 @@ export function CompanySettings() {
               </span>
             )}
           </div>
+
+          <div className="border-t border-destructive/20 pt-4 mt-4 space-y-3">
+            <p className="text-sm font-medium text-destructive">
+              Delete Organization
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Permanently delete this organization and all its data including agents, issues,
+              runs, and configuration. This action cannot be undone.
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={exportMutation.isPending}
+              onClick={() => exportMutation.mutate()}
+            >
+              <Download className="h-3.5 w-3.5 mr-1.5" />
+              {exportMutation.isPending ? "Downloading..." : "Download Data Archive"}
+            </Button>
+            {exportMutation.isError && (
+              <p className="text-xs text-destructive">
+                {exportMutation.error instanceof Error
+                  ? exportMutation.error.message
+                  : "Failed to export data"}
+              </p>
+            )}
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">
+                Type <strong className="text-foreground">{selectedCompany.name}</strong> to confirm:
+              </p>
+              <input
+                type="text"
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                className="w-full max-w-xs rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring"
+                placeholder={selectedCompany.name}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={
+                  deleteConfirmText !== selectedCompany.name ||
+                  deleteMutation.isPending
+                }
+                onClick={() => {
+                  if (!selectedCompanyId) return;
+                  const nextCompanyId =
+                    companies.find(
+                      (company) =>
+                        company.id !== selectedCompanyId &&
+                        company.status !== "archived"
+                    )?.id ?? null;
+                  deleteMutation.mutate({
+                    companyId: selectedCompanyId,
+                    nextCompanyId,
+                  });
+                }}
+              >
+                {deleteMutation.isPending
+                  ? "Deleting..."
+                  : "Delete Organization"}
+              </Button>
+              {deleteMutation.isError && (
+                <span className="text-xs text-destructive">
+                  {deleteMutation.error instanceof Error
+                    ? deleteMutation.error.message
+                    : "Failed to delete organization"}
+                </span>
+              )}
+            </div>
+          </div>
         </div>
       </div>
+
+      <SnapshotExportModal
+        open={snapshotExportOpen}
+        onClose={() => setSnapshotExportOpen(false)}
+        companyId={selectedCompanyId!}
+        companyName={selectedCompany.name}
+      />
+      <SnapshotImportModal
+        open={snapshotImportOpen}
+        onClose={() => setSnapshotImportOpen(false)}
+      />
     </div>
   );
 }
