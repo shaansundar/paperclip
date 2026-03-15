@@ -33,7 +33,7 @@ paperclip-snapshot-{companySlug}-{timestamp}.tar.gz
 │   ├── runtime_state.json           # Agent runtime state (session persistence)
 │   ├── task_sessions.json           # Agent task sessions
 │   ├── config_revisions.json        # Immutable config change history
-│   └── api_keys.json                # Agent API keys (re-generated on import)
+│   └── api_keys.json                # Agent API key metadata only (keys re-generated on import)
 ├── goals/
 │   └── goals.json                   # Hierarchical goal tree
 ├── projects/
@@ -47,13 +47,15 @@ paperclip-snapshot-{companySlug}-{timestamp}.tar.gz
 │   └── read_states.json             # Issue read states
 ├── execution/
 │   ├── heartbeat_runs.json          # Filtered by configurable window
-│   ├── run_events.json              # Events for included runs only
+│   ├── run_events.json              # Events for included runs only (IDs regenerated on import)
 │   ├── wakeup_requests.json         # Pending + recent wakeup requests
-│   └── cost_events.json             # Cost events for included runs
+│   ├── cost_events.json             # Filtered by companyId + occurredAt within history window
+│   └── workspace_runtime_services.json  # Runtime service configs (paths subject to rewriting)
 ├── governance/
 │   ├── approvals.json               # Approvals + approval comments
-│   ├── memberships.json             # Company memberships
-│   └── permissions.json             # Permission grants
+│   ├── issue_approvals.json         # Issue-to-approval join records
+│   ├── memberships.json             # Company memberships (note: user refs may be orphaned)
+│   └── permissions.json             # Permission grants (note: user refs may be orphaned)
 ├── secrets/
 │   └── secrets.json                 # Decrypted secrets (bundle is passphrase-encrypted)
 ├── activity_log.json                # Audit trail (filtered by window)
@@ -107,7 +109,8 @@ paperclip-snapshot-{companySlug}-{timestamp}.tar.gz
 
 3. **Extract data** — Query each table filtered by `companyId`, ordered by dependency:
    - company → agents → goals → projects → workspaces → issues → labels → comments → attachments
-   - execution: heartbeat_runs → run_events → cost_events → wakeup_requests
+   - execution: heartbeat_runs → run_events → wakeup_requests → workspace_runtime_services
+   - cost_events: filtered by `companyId` + `occurredAt` timestamp (not by run ID, as no FK exists)
    - governance: approvals → memberships → permissions
    - state: agent_runtime_state → agent_task_sessions → agent_config_revisions
    - activity_log
@@ -119,6 +122,7 @@ paperclip-snapshot-{companySlug}-{timestamp}.tar.gz
    - `projects[].executionWorkspacePolicy` path fields
    - `workspaces[].cwd`
    - `workspaces[].repoUrl` (if local path)
+   - `workspace_runtime_services[].cwd`
 
    Write to `path_mappings.json`:
    ```json
@@ -145,11 +149,14 @@ paperclip-snapshot-{companySlug}-{timestamp}.tar.gz
    - Key derivation: Argon2id (memory=64MB, iterations=3, parallelism=1)
    - Cipher: AES-256-GCM
    - Random 16-byte salt + 12-byte nonce stored as plaintext header
+   - Each archive uses a unique salt, so each derived key is unique (no GCM nonce reuse risk)
    - Output: `.paperclip-snapshot.tar.gz.enc`
 
 9. **Resume agents** — If paused in step 1, resume them.
 
 10. **Cleanup** — Remove temp directory.
+
+**Critical: Steps 5-10 are wrapped in a try/finally block.** The finally block guarantees temp directory deletion even on crash, preventing plaintext secrets from remaining on disk. Secrets are never written to an unencrypted file outside the temp directory.
 
 ### History Filtering (Step 3)
 
@@ -183,16 +190,26 @@ paperclip-snapshot-{companySlug}-{timestamp}.tar.gz
 5. **Conflict resolution** — Check target DB for existing company:
    - No conflict → Insert normally.
    - Name conflict, different ID → Prompt to rename or merge.
+   - `issuePrefix` conflict → Auto-generate unique prefix (append numeric suffix) or prompt user.
    - Same ID (re-import/restore) → Offer wipe-and-replace (requires confirmation).
+   - `issueCounter` handling: On replace, set to `MAX(source.issueCounter, target.issueCounter)` to prevent identifier collisions.
+   - `issues.identifier` collision: On replace mode, existing identifiers are wiped first. On rename/new-company mode, regenerate identifiers using the target company's `issuePrefix` + counter.
 
-6. **Insert data** — Single DB transaction, FK-ordered:
+6. **Insert data** — Per-phase transactions with rollback-all on failure (avoids long-held locks for large datasets):
    - Phase 1: company, agents (with `reportsTo = null`), goals (with `parentId = null`), projects
-   - Phase 2: Update self-referential FKs (agent `reportsTo`, goal `parentId`, issue `parentId`)
-   - Phase 3: workspaces, issues, labels, comments, attachments, read_states
-   - Phase 4: execution history (heartbeat_runs, run_events, cost_events, wakeup_requests)
-   - Phase 5: governance (approvals, memberships, permissions)
-   - Phase 6: agent state (runtime_state, task_sessions, config_revisions)
-   - Phase 7: activity_log
+   - Phase 2: Update self-referential FKs (agent `reportsTo`, goal `parentId`)
+   - Phase 3: workspaces, labels, project_goals
+   - Phase 4: heartbeat_runs (needed before issues due to `checkoutRunId`/`executionRunId` FKs)
+   - Phase 5: issues (with `parentId = null`), then update issue `parentId` self-references. Also insert issue_comments, issue_labels, issue_attachments, issue_read_states
+   - Phase 6: run_events (IDs regenerated by DB `bigserial`, ordered by `seq` within each run), wakeup_requests, workspace_runtime_services
+   - Phase 7: cost_events (depends on agents, issues, projects, goals from earlier phases)
+   - Phase 8: governance — approvals, approval_comments, issue_approvals, memberships, permissions
+   - Phase 9: agent state (runtime_state, task_sessions, config_revisions)
+   - Phase 10: activity_log (entries referencing excluded heartbeat_runs get `runId = null`)
+
+   On failure in any phase, all previously committed phases are rolled back via a cleanup procedure that deletes all inserted records by company ID.
+
+   After all phases complete, reset `bigserial` sequences to `MAX(existing, imported) + 1` for `heartbeat_run_events`.
 
 7. **Re-encrypt secrets** — Encrypt plaintext secrets with target instance's `.secrets.key`. If no key exists, generate one. Insert into `company_secrets` + `company_secret_versions`.
 
@@ -271,6 +288,18 @@ POST /api/companies/import/inspect
   Response: { manifest, detectedPaths, schemaCompatibility, conflicts }
 ```
 
+### Progress Tracking
+
+For large exports/imports, the UI progress bar is driven by Server-Sent Events (SSE):
+
+```
+GET /api/companies/:id/export/progress?jobId=xxx
+GET /api/companies/import/progress?jobId=xxx
+  Response: SSE stream with { phase, table, recordsProcessed, totalRecords }
+```
+
+The export/import endpoints return a `jobId` immediately, and the actual work runs asynchronously. The CLI polls the progress endpoint internally to display a progress bar.
+
 ## Error Handling
 
 ### Export Failures
@@ -314,6 +343,17 @@ POST /api/companies/import/inspect
 - Random 16-byte salt + 12-byte nonce as plaintext header in `.enc` file
 - Encryption on raw tar.gz — no plaintext written to disk outside temp dir
 - Temp directory uses `0700` permissions, wiped on cleanup
+
+### Passphrase Requirements
+
+- Minimum 12 characters enforced by default
+- Override with `--force` flag for automation scenarios
+- UI shows strength indicator
+
+### Archive Integrity
+
+- The `.enc` file includes a trailing HMAC-SHA256 over the ciphertext, verifiable before decryption
+- Allows detecting corruption during file transfer without needing the passphrase
 
 ### Secrets in Transit
 
@@ -369,10 +409,42 @@ POST /api/companies/import/inspect
 - `company_memberships`
 - `principal_permission_grants`
 
+### Work & Execution (continued)
+- `issue_approvals`
+
+### Execution & Services
+- `workspace_runtime_services`
+
 ### Excluded (Instance-Level)
 - `auth_users`, `auth_sessions`, `auth_accounts`, `auth_verifications` — these belong to the instance, not the company
 - `instance_user_roles` — instance-level
 - `invites`, `join_requests` — ephemeral, tied to instance auth
+
+## Relationship to Existing Portability Service
+
+The codebase has an existing `company-portability.ts` service that handles markdown-based agent import/export with slug collision resolution. This snapshot feature is a **complementary capability**, not a replacement:
+
+- **Existing service:** Lightweight agent-level import/export via markdown frontmatter. Used for adding/copying individual agents between companies.
+- **This feature:** Full organization-level snapshot for device migration and backup/restore. Captures complete state including execution history, secrets, governance, and configuration.
+
+Where applicable, collision resolution logic from `company-portability.ts` should be reused rather than duplicated.
+
+## Archive Format Versioning
+
+The manifest `"version"` field tracks archive format versions:
+
+- **Forward compatibility:** Older Paperclip versions encountering a newer archive version abort with "Upgrade Paperclip to import this snapshot."
+- **Backward compatibility:** Newer Paperclip versions can import older archive versions. Missing files/fields use defaults. The import code maintains a version-specific adapter layer.
+- **Version bumps:** Triggered by structural changes (new top-level directories, changed manifest schema, new encryption scheme). Adding new JSON files within existing directories does NOT require a version bump — importers ignore unknown files.
+
+## Orphaned User References
+
+`company_memberships` and `principal_permission_grants` may reference `auth_users` IDs that don't exist on the target instance (since auth tables are instance-level and excluded from export).
+
+On import:
+- Memberships/permissions referencing non-existent user IDs are imported but flagged in the summary as "orphaned user references."
+- The importing user is automatically added as a company admin if not already present.
+- Other user references can be resolved post-import by inviting users to the company on the target instance.
 
 ## TDD Implementation Approach
 
