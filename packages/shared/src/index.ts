@@ -187,6 +187,15 @@ export type {
   PluginJobRecord,
   PluginJobRunRecord,
   PluginWebhookDeliveryRecord,
+  SnapshotManifest,
+  SnapshotExportOptions,
+  SnapshotExportInput,
+  SnapshotExportResult,
+  SnapshotImportInput,
+  SnapshotImportResult,
+  SnapshotInspectResult,
+  SnapshotPathEntry,
+  SnapshotConflict,
 } from "./types/index.js";
 
 export {
