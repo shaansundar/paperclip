@@ -247,14 +247,13 @@ async function runExport(
   const manifestBuf = Buffer.from(JSON.stringify(manifest, null, 2));
   await fs.writeFile(path.join(tempDir, "manifest.json"), manifestBuf);
 
-  // 8. Create tar.gz in a temporary output path
-  const tarGzName = `paperclip-snapshot-${Date.now()}.tar.gz`;
-  const tarGzPath = path.join(os.tmpdir(), tarGzName);
-  await tarCreate({ gzip: true, cwd: tempDir, file: tarGzPath }, ["."]);
-
-  // 9. Read tar.gz, encrypt, remove intermediate file
-  const tarGzBuffer = await fs.readFile(tarGzPath);
-  await fs.rm(tarGzPath, { force: true });
+  // 8. Create tar.gz as a buffer (stream-based, no intermediate file)
+  const tarStream = tarCreate({ gzip: true, cwd: tempDir }, ["."]);
+  const chunks: Buffer[] = [];
+  for await (const chunk of tarStream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+  }
+  const tarGzBuffer = Buffer.concat(chunks);
 
   const encrypted = await encryptBuffer(tarGzBuffer, passphrase);
 
