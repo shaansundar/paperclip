@@ -334,6 +334,11 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  snapshotExportInputSchema,
+  snapshotImportInputSchema,
+  snapshotManifestSchema,
+  type SnapshotExportInputParsed,
+  type SnapshotImportInputParsed,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
